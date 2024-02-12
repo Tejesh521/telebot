@@ -1,0 +1,369 @@
+import telebot
+import random
+import time
+import firebase_admin
+from firebase_admin import credentials, db
+from datetime import datetime
+from keep_alive import keep_alive
+
+# Firebase configuration
+cred = credentials.Certificate("cred.json")
+firebase_admin.initialize_app(
+    cred,
+    {'databaseURL': 'https://borisbot-1f0c0-default-rtdb.firebaseio.com/'})
+keep_alive()
+
+bot = telebot.TeleBot("6606140209:AAFnA0bMhqZ8Xy8DiJmhMJeui9ULDkBAbws"
+                      )  # Replace with your bot token
+
+
+class MathQuiz:
+
+  def __init__(self):
+    self.questions = []
+    self.user_answers = {}
+    self.start_times = {}
+    self.quiz_ongoing = False
+    self.question_speed = 7  # Default speed
+
+  def generate_questions(self):
+    for i in range(10):
+      a = random.randint(1, 10)
+      b = random.randint(1, 10)
+      op = random.choice(["+", "-", "*"])
+      question = {
+          "label": f"q{i + 1}",
+          "a": a,
+          "b": b,
+          "op": op,
+          "ans": self.calc_answer(a, b, op),
+          "start_time": 0
+      }
+      self.questions.append(question)
+
+  def calc_answer(self, a, b, op):
+    if op == "+":
+      return a + b
+    elif op == "-":
+      return a - b
+    elif op == "*":
+      return a * b
+
+  def start_quiz(self, chat_id):
+    if not self.quiz_ongoing:
+      self.generate_questions()
+      self.quiz_ongoing = True
+      for q in self.questions:
+        q["start_time"] = time.time()
+        msg = f"Question {q['label'][1:]}: A {q['op']} B={q['ans']} where A is {q['a']} Find B = ?"
+        bot.send_message(chat_id, msg)
+        time.sleep(self.question_speed)
+
+      timer = 17
+      while timer > 0:
+        time.sleep(1)
+        timer -= 1
+        if timer == 0:
+          self.details1(chat_id)
+
+      time.sleep(1)
+      self.end_quiz(chat_id)
+
+  def end_quiz(self, chat_id):
+    if self.quiz_ongoing:
+      self.quiz_ongoing = False
+      self.save_score(chat_id)
+      total_time_taken = sum([
+          self.get_time_taken(chat_id, i + 1)
+          for i in range(len(self.questions))
+          if self.get_time_taken(chat_id, i + 1) is not None
+      ])
+      #bot.send_message(chat_id, f"Total time taken: {total_time_taken:.2f} seconds")
+      self.questions.clear()
+      self.user_answers.clear()
+      self.start_times.clear()
+      bot.send_message(chat_id, "Quiz ended. Type /start to begin a new quiz.")
+    else:
+      bot.send_message(
+          chat_id,
+          "No quiz ongoing currently. Type /start to begin a new quiz.")
+
+  def details(self, chat_id):
+    if not self.questions:
+      bot.send_message(chat_id,
+                       "No quiz ongoing currently. Type 'yes' to start.")
+    else:
+      correct = 0
+      wrong = 0
+      unanswered = 0
+
+      for q in self.questions:
+        index = self.questions.index(q) + 1
+        user_ans = self.user_answers.get((chat_id, index))
+
+        if user_ans is not None:
+          if user_ans == q["b"]:
+            correct += 1
+          else:
+            wrong += 1
+        else:
+          unanswered += 1
+
+      summary = f"Correct: {correct}\nIncorrect: {wrong}\nUnanswered: {unanswered}"
+      bot.send_message(chat_id, summary)
+      bot.send_message(chat_id, "Print 'ans' to see detailed breakdown.")
+
+  def details1(self, chat_id):
+    if not self.questions:
+      bot.send_message(chat_id,
+                       "No quiz ongoing currently. Type 'yes' to start.")
+    else:
+      correct = 0
+      wrong = 0
+      unanswered = 0
+
+      for q in self.questions:
+        index = self.questions.index(q) + 1
+        user_ans = self.user_answers.get((chat_id, index))
+
+        if user_ans is not None:
+          if user_ans == q["b"]:
+            correct += 1
+          else:
+            wrong += 1
+        else:
+          unanswered += 1
+
+      summary = f"Correct: {correct}\nIncorrect: {wrong}\nUnanswered: {unanswered}"
+      bot.send_message(chat_id, summary)
+
+  def save_score(self, chat_id):
+    correct = 0
+    incorrect = 0
+    unanswered = 0
+    total_time_taken = 0  # Initialize total time taken
+
+    for q in self.questions:
+      index = self.questions.index(q) + 1
+      user_ans = self.user_answers.get((chat_id, index))
+
+      if user_ans is not None:
+        if user_ans == q["b"]:
+          correct += 1
+        else:
+          incorrect += 1
+      else:
+        unanswered += 1
+
+    for i in range(1, len(self.questions) + 1):
+      time_taken = self.get_time_taken(chat_id, i)
+      if time_taken is not None:
+        total_time_taken += time_taken
+
+    user_name = bot.get_chat_member(chat_id, chat_id).user.username
+    scores_ref = db.reference(f'scores/{chat_id}')
+    timestamp = int(time.time())
+
+    timestamp_readable = datetime.utcfromtimestamp(timestamp).strftime(
+        '%Y-%m-%d %H:%M:%S')
+
+    scores_ref.push().set({
+        'user_name': user_name,
+        'correct_answers': correct,
+        'incorrect_answers': incorrect,
+        'unanswered': unanswered,
+        'total_time_taken': total_time_taken,
+        'timestamp': timestamp,
+        'timestamp_readable': timestamp_readable
+    })
+
+  def save_answer(self, msg):
+    chat_id = msg.chat.id
+    user_name = msg.from_user.username
+    try:
+      index, ans = map(int, msg.text.split())
+      self.user_answers[(chat_id, index)] = ans
+      if (chat_id, index) not in self.start_times:
+        self.start_times[(chat_id, index)] = time.time()
+    except ValueError:
+      bot.reply_to(msg, "Invalid response")
+
+  def check_answers(self, chat_id):
+    correct = 0
+    wrong = 0
+    unanswered = 0
+
+    for q in self.questions:
+      index = self.questions.index(q) + 1
+      user_ans = self.user_answers.get((chat_id, index))
+      user_name = bot.get_chat_member(chat_id, chat_id).user.username
+
+      if user_ans is not None:
+        if user_ans == q["b"]:
+          correct += 1
+          bot.send_message(
+              chat_id, f"{user_name} answered Question {index} correctly!")
+        else:
+          wrong += 1
+          bot.send_message(
+              chat_id,
+              f"{user_name} answered Question {index} incorrectly. Correct answer is {q['b']}"
+          )
+      else:
+        unanswered += 1
+
+    self.questions.clear()
+    self.user_answers.clear()
+
+    msg = f"{user_name}'s Quiz Results:\nCorrect: {correct}\nIncorrect: {wrong}\nUnanswered: {unanswered}"
+    bot.send_message(chat_id, msg)
+
+  def get_time_taken(self, chat_id, index):
+    start_time = self.start_times.get((chat_id, index))
+    if start_time is not None:
+      return time.time() - start_time
+    else:
+      return None
+
+
+# Create an instance of the MathQuiz class
+math_quiz = MathQuiz()
+
+
+@bot.message_handler(commands=["start"])
+def start(msg):
+  bot.reply_to(msg, "Hi, type 'yes' to start quiz.")
+
+
+@bot.message_handler(func=lambda msg: msg.text.lower() == "yes")
+def start_quiz(msg):
+  math_quiz.start_quiz(msg.chat.id)
+
+
+@bot.message_handler(commands=["end"])
+def end_quiz(msg):
+  math_quiz.end_quiz(msg.chat.id)
+
+
+@bot.message_handler(
+    func=lambda msg: any(msg.text.lower().startswith(str(q["label"][1:]))
+                         for q in math_quiz.questions))
+def save_answer(msg):
+  chat_id = msg.chat.id
+  index = int(msg.text.split()[0])
+  math_quiz.save_answer(msg)
+  math_quiz.start_times[(chat_id, index)] = time.time()
+
+
+@bot.message_handler(commands=["details"])
+def details(msg):
+  if not math_quiz.questions:
+    bot.reply_to(msg, "No quiz ongoing currently. Type 'yes' to start.")
+  else:
+    correct = 0
+    wrong = 0
+    unanswered = 0
+
+    for q in math_quiz.questions:
+      index = math_quiz.questions.index(q) + 1
+      chat_id = msg.chat.id
+
+      user_ans = math_quiz.user_answers.get((chat_id, index))
+      if user_ans is not None:
+        if user_ans == q["b"]:
+          correct += 1
+        else:
+          wrong += 1
+      else:
+        unanswered += 1
+
+    summary = f"Correct: {correct}\nIncorrect: {wrong}\nUnanswered: {unanswered}"
+    bot.send_message(msg.chat.id, summary)
+    bot.send_message(msg.chat.id, "Print 'ans' to see detailed breakdown.")
+
+
+@bot.message_handler(commands=["time"])
+def show_time_taken(msg):
+  if not math_quiz.questions:
+    bot.reply_to(msg, "No quiz ongoing currently. Type 'yes' to start.")
+  else:
+    for i, q in enumerate(math_quiz.questions):
+      time_taken = math_quiz.get_time_taken(msg.chat.id, i +
+                                            1)  # Adjust index to start from 1
+      if time_taken is not None:
+        time_taken /= 10
+        bot.send_message(msg.chat.id,
+                         f"Q{i + 1}: Time taken: {time_taken:.2f} seconds")
+
+
+@bot.message_handler(func=lambda msg: msg.text.lower() == "ans")
+def show_answers(msg):
+  if not math_quiz.questions:
+    bot.reply_to(msg, "No quiz ongoing currently. Type 'yes' to start.")
+  else:
+    for i, q in enumerate(math_quiz.questions):
+      ans = math_quiz.user_answers.get(
+          (msg.chat.id, i + 1))  # Adjust index to start from 1
+      correct_ans = q["b"]
+
+      if ans == correct_ans:
+        bot.send_message(msg.chat.id, f"Q{i + 1}: Correct")
+      else:
+        bot.send_message(msg.chat.id,
+                         f"Q{i + 1}: Incorrect, answer is {correct_ans}")
+
+
+@bot.message_handler(commands=["calibrate"])
+def calibrate(msg):
+  bot.reply_to(msg, "Enter the new speed (in seconds) for quiz questions:")
+  bot.register_next_step_handler(msg, process_calibration_step)
+
+
+def process_calibration_step(msg):
+  chat_id = msg.chat.id
+  try:
+    speed = float(msg.text)
+    if speed > 0:
+      math_quiz.question_speed = speed
+      bot.send_message(chat_id,
+                       f"Quiz question speed updated to {speed} seconds.")
+    else:
+      bot.send_message(chat_id,
+                       "Invalid speed. Please enter a positive number.")
+  except ValueError:
+    bot.send_message(chat_id, "Invalid input. Please enter a valid number.")
+
+
+@bot.message_handler(commands=["final"])
+def final_results(msg):
+  chat_id = msg.chat.id
+  user_id = str(chat_id)
+
+  scores_ref = db.reference('scores/' + user_id)
+
+  last_result_key = scores_ref.get(shallow=True)
+  if last_result_key:
+    last_result_key = max(last_result_key)
+
+    last_result = scores_ref.child(last_result_key).get()
+
+    correct_answers = last_result.get('correct_answers', 0)
+    incorrect_answers = last_result.get('incorrect_answers', 0)
+    unanswered = last_result.get('unanswered', 0)
+    total_time_taken = last_result.get('total_time_taken', 0)
+    total_time_taken = (total_time_taken / 10)
+    user_name = last_result.get('user_name', 'Unknown User')
+
+    result_message = (f"Last Updated Results:\n"
+                      f"User: {user_name}\n"
+                      f"Correct Answers: {correct_answers}\n"
+                      f"Incorrect Answers: {incorrect_answers}\n"
+                      f"Unanswered: {unanswered}\n"
+                      f"Total Time Taken: {total_time_taken:.2f} seconds")
+
+    bot.send_message(chat_id, result_message)
+  else:
+    bot.send_message(chat_id, "No results found in the database.")
+
+
+bot.polling()
